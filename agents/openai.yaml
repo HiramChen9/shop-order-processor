@@ -1,0 +1,4 @@
+interface:
+  display_name: "电商订单处理"
+  short_description: "处理Shopee、Lazada、TikTok Shop订单Excel，含筛选、SKU匹配成本运费、印尼数值格式转换"
+  default_prompt: "帮我处理电商订单Excel文件"

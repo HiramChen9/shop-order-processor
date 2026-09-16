@@ -2,7 +2,7 @@
 """
 E-commerce order Excel processor for Shopee, Lazada, TikTok Shop.
 """
-import argparse, os, re, sys
+import argparse, json, os, re, sys
 try:
     import openpyxl
     from openpyxl.styles import Font, Alignment, Border, Side, PatternFill
@@ -11,6 +11,18 @@ except ImportError:
     print("Error: openpyxl required"); sys.exit(1)
 
 SKU_RULES = [
+    (re.compile(r'^JGS[^-]+-2\.8$'), 13.2924, 6.300285),
+    (re.compile(r'^AN.+-3$'), 2.8, 0.57843072),
+    (re.compile(r'^CZTJZH-.+-60-2\.8$'), 9.78, 5.3960088),
+    (re.compile(r'^CZT-157-3060\*30-1\.0$'), 24.72, 5.4553056),
+    (re.compile(r'^CZTJZH-.+-90-2\.8$'), 12.224, 7.69902),
+    (re.compile(r'^KC.+-3060-\*5$'), 6.795, 2.5),
+    (re.compile(r'^KC.+-3060-\*10$'), 13.59, 5.0599936),
+    (re.compile(r'^KC.+-60-2\.8$'), 13.356, 6.300285),
+    (re.compile(r'^JGS.+-60-2\.8$'), 13.3428, 6.300285),
+    (re.compile(r'^CZT-.+-90-2\.8$'), 12.224, 7.69902),
+    (re.compile(r'^CZT-.+-120-2\.8-IXPE-1$'), 15.9132, 5.9069655),
+    (re.compile(r'^HZT-.+-2020\*36$'), 12.72, 0.58997925),
     (re.compile(r'^CZTWC.+-3060\*20$'), 26.4, 0),
     (re.compile(r'^CZTWC.+-3060\*10$'), 13.2, 0),
     (re.compile(r'^BKCZT-.+-3060\*20$'), 13.6, 1.07524864),
@@ -38,9 +50,14 @@ SKU_RULES = [
 
 def parse_idr(val):
     if val is None: return None
-    s = str(val).strip()
+    s = str(val).strip().replace(",", ".")
     if not s or s == "0": return 0
-    s = s.replace(".", "")
+    if "." in s:
+        parts = s.split(".")
+        if len(parts[-1]) == 3:
+            s = s.replace(".", "")
+        elif len(parts) > 1:
+            s = "".join(parts[:-1]) + "." + parts[-1]
     try: return int(s)
     except ValueError:
         try: return float(s)
@@ -106,7 +123,10 @@ def match_cost_shipping(sku):
 
 def is_black_bg(cell):
     f = cell.fill
-    return f and f.start_color and f.start_color.rgb == "00000000"
+    if not f or f.fill_type != "solid":
+        return False
+    color = f.fgColor
+    return color.type == "rgb" and color.rgb in {"00000000", "FF000000"}
 
 
 def style_header(ws, headers):
@@ -118,27 +138,34 @@ def style_header(ws, headers):
 
 
 def auto_width(ws, headers):
+    def display_width(value):
+        return sum(2 if ord(ch) > 127 else 1 for ch in str(value))
+
     for ci, h in enumerate(headers, 1):
-        ml = max(len(h.encode("utf-8")), 8)
+        ml = max(display_width(h), 8)
         for ri in range(2, ws.max_row + 1):
             if ws.cell(ri, ci).value is not None:
-                ml = max(ml, len(str(ws.cell(ri, ci).value).encode("utf-8")))
-        ws.column_dimensions[openpyxl.utils.get_column_letter(ci)].width = min(ml // 2 + 6, 55)
+                ml = max(ml, display_width(ws.cell(ri, ci).value))
+        ws.column_dimensions[openpyxl.utils.get_column_letter(ci)].width = min(ml + 2, 55)
 
 
 def write_data_sheet(ws, rows, headers):
     style_header(ws, headers)
     bd = Border(left=Side(style="thin"),right=Side(style="thin"),top=Side(style="thin"),bottom=Side(style="thin"))
-    cidx = next((i for i, h in enumerate(headers) if h in ("\u6210\u672c", "cost")), None)
-    sidx = next((i for i, h in enumerate(headers) if h in ("\u8fd0\u8d39", "shipping")), None)
-    ctx = next((i for i, h in enumerate(headers) if h == "\u6210\u672c\u5408\u8ba1"), None)
-    stx = next((i for i, h in enumerate(headers) if h == "\u8fd0\u8d39\u5408\u8ba1"), None)
-    qn = next((i for i, h in enumerate(headers) if h in ("\u4ef6\u6570", "Quantity")), None)
-    mn = next((i for i, h in enumerate(headers) if h in ("\u8ba2\u5355\u5c0f\u8ba1", "paidPrice", "SKU Subtotal After Discount")), None)
+    cidx = next((i for i, h in enumerate(headers, 1) if h in ("\u6210\u672c", "cost")), None)
+    sidx = next((i for i, h in enumerate(headers, 1) if h in ("\u8fd0\u8d39", "shipping")), None)
+    ctx = next((i for i, h in enumerate(headers, 1) if h == "\u6210\u672c\u5408\u8ba1"), None)
+    stx = next((i for i, h in enumerate(headers, 1) if h == "\u8fd0\u8d39\u5408\u8ba1"), None)
+    qn = next((i for i, h in enumerate(headers, 1) if h in ("\u4ef6\u6570", "Quantity")), None)
+    mn = next((i for i, h in enumerate(headers, 1) if h in ("\u8ba2\u5355\u5c0f\u8ba1", "paidPrice", "SKU Subtotal After Discount")), None)
+    oid = next((i for i, h in enumerate(headers, 1) if h in ("\u8ba2\u5355\u53f7", "orderNumber", "Order ID")), None)
     for ri, rd in enumerate(rows, 2):
         for ci, val in enumerate(rd, 1):
             c = ws.cell(ri, ci, val); c.border = bd
-            if ci in (cidx, sidx, ctx, stx) and val is not None:
+            if ci == oid:
+                c.number_format = "@"
+                c.alignment = Alignment(horizontal="left")
+            elif ci in (cidx, sidx, ctx, stx) and val is not None:
                 c.alignment = Alignment(horizontal="right"); c.number_format = "#,##0.00"
             elif ci == mn:
                 c.alignment = Alignment(horizontal="right")
@@ -193,7 +220,7 @@ def add_summary(wb, rows, headers, date_idx, order_idx, qty_idx, cost_total_idx,
             if ci == 1: c.alignment = Alignment(horizontal="left")
             else:
                 c.alignment = Alignment(horizontal="right")
-                if ci >= 3: c.number_format = "#,##0"
+                c.number_format = "#,##0.00" if sum_headers[ci - 1] in ("\u6210\u672c\u603b\u989d", "\u8fd0\u8d39\u603b\u989d") else "#,##0"
         row_idx += 1
     tf = Font(bold=True, size=11)
     tv = ["\u5408\u8ba1", sum(len(v["orders"]) for v in daily.values()), sum(v["qty"] for v in daily.values())]
@@ -207,8 +234,19 @@ def add_summary(wb, rows, headers, date_idx, order_idx, qty_idx, cost_total_idx,
         if ci == 1: c.alignment = Alignment(horizontal="left")
         else:
             c.alignment = Alignment(horizontal="right")
-            if ci >= 3: c.number_format = "#,##0"
+            c.number_format = "#,##0.00" if sum_headers[ci - 1] in ("\u6210\u672c\u603b\u989d", "\u8fd0\u8d39\u603b\u989d") else "#,##0"
     auto_width(ws, sum_headers)
+    return [
+        {
+            "date": date,
+            "orders": len(daily[date]["orders"]),
+            "quantity": daily[date]["qty"],
+            "net_sales": daily[date]["sales"],
+            "cost": daily[date]["ct"],
+            "shipping": daily[date]["st"],
+        }
+        for date in sorted(daily.keys())
+    ]
 
 
 def process_shopee(in_path, out_path):
@@ -217,28 +255,46 @@ def process_shopee(in_path, out_path):
     headers = ["订单号", "订单创建时间", "参考sku编码",
                "成本", "运费", "件数", "成本合计", "运费合计",
                "订单小计", "卖家承担的优惠券"]
+    hd = {}
+    for c in range(1, ws.max_column + 1):
+        v = ws.cell(1, c).value
+        if v: hd[str(v).strip()] = c
+    def find_col(*names):
+        for n in names:
+            if n in hd: return hd[n]
+        return None
+    ci = {
+        "order": find_col("No. Pesanan", "订单号", "Order Number") or 1,
+        "status": find_col("Status Pesanan", "Order Status", "Status") or 2,
+        "date": find_col("Waktu Pesanan Dibuat", "订单创建时间", "Order Created Time") or 10,
+        "sku": find_col("Nomor Referensi SKU", "参考sku编码", "Seller SKU") or 16,
+        "qty": find_col("Jumlah", "件数", "Quantity") or 20,
+        "sub": find_col("Subtotal Pesanan", "订单小计", "Order Subtotal") or 22,
+        "vou": find_col("Voucher Ditanggung Penjual", "卖家承担的优惠券", "Seller Voucher") or 29,
+    }
     rows = []
     for r in range(2, ws.max_row + 1):
-        if ws.cell(r, 2).value in excl: continue
-        black = is_black_bg(ws.cell(r, 1))
-        raw = ws.cell(r, 15).value or ""
+        if ws.cell(r, ci["status"]).value in excl: continue
+        black = is_black_bg(ws.cell(r, ci["order"]))
+        raw = ws.cell(r, ci["sku"]).value or ""
         cost, ship = match_cost_shipping(clean_sku(raw))
-        try: qty = int(str(ws.cell(r, 19).value or "0").strip())
+        try: qty = int(str(ws.cell(r, ci["qty"]).value or "0").strip())
         except: qty = 0
-        sub = parse_idr(ws.cell(r, 21).value)
-        vou = parse_idr(ws.cell(r, 28).value)
+        sub = parse_idr(ws.cell(r, ci["sub"]).value)
+        vou = parse_idr(ws.cell(r, ci["vou"]).value)
         if black: vou = 0
         ct = round(cost * qty, 2) if cost is not None else None
         st = round(ship * qty, 2) if ship is not None else None
-        date_val = trunc_date(ws.cell(r, 10).value)
-        rows.append([ws.cell(r, 1).value, date_val, raw, cost, ship, qty, ct, st, sub, vou])
+        date_val = trunc_date(ws.cell(r, ci["date"]).value)
+        order_value = ws.cell(r, ci["order"]).value
+        rows.append([str(order_value) if order_value is not None else "", date_val, raw, cost, ship, qty, ct, st, sub, vou])
     wb_out = openpyxl.Workbook()
     ws_out = wb_out.active; ws_out.title = "筛选后"
     write_data_sheet(ws_out, rows, headers)
-    add_summary(wb_out, rows, headers, date_idx=1, order_idx=0, qty_idx=5,
-                cost_total_idx=6, ship_total_idx=7,
-                sales_fn=lambda r: (r[8] or 0) - (r[9] or 0))
-    wb_out.save(out_path); return len(rows)
+    summaries = add_summary(wb_out, rows, headers, date_idx=1, order_idx=0, qty_idx=5,
+                            cost_total_idx=6, ship_total_idx=7,
+                            sales_fn=lambda r: (r[8] or 0) - (r[9] or 0))
+    wb_out.save(out_path); return len(rows), summaries
 
 
 def process_lazada(in_path, out_path):
@@ -261,7 +317,7 @@ def process_lazada(in_path, out_path):
         cost, ship = match_cost_shipping(clean_sku(raw_sku))
         date_val = trunc_date(ws.cell(r, ci["createTime"]).value)
         raw_rows.append({"sku": raw_sku, "date": date_val,
-            "order": ws.cell(r, ci["orderNumber"]).value,
+            "order": str(ws.cell(r, ci["orderNumber"]).value or ""),
             "price": parse_idr(ws.cell(r, ci["paidPrice"]).value),
             "status": ws.cell(r, ci["status"]).value,
             "cost": cost, "ship": ship})
@@ -275,10 +331,10 @@ def process_lazada(in_path, out_path):
     wb_out = openpyxl.Workbook()
     ws_out = wb_out.active; ws_out.title = "筛选后"
     write_data_sheet(ws_out, rows, headers)
-    add_summary(wb_out, rows, headers, date_idx=1, order_idx=2, qty_idx=7,
-                cost_total_idx=8, ship_total_idx=9,
-                sales_fn=lambda r: r[3] or 0)
-    wb_out.save(out_path); return len(rows)
+    summaries = add_summary(wb_out, rows, headers, date_idx=1, order_idx=2, qty_idx=7,
+                            cost_total_idx=8, ship_total_idx=9,
+                            sales_fn=lambda r: r[3] or 0)
+    wb_out.save(out_path); return len(rows), summaries
 
 
 def process_tiktok(in_path, out_path):
@@ -293,11 +349,14 @@ def process_tiktok(in_path, out_path):
         if k not in hd: print("Error: column " + k + " not found"); sys.exit(1)
     ci = {k: hd[k] for k in req}
     excl = {"canceled", "cancelled", "unpaid", "batal", "belum bayar"}
+    data_start = 2
+    if str(ws.cell(2, ci["Order Status"]).value or "").strip().startswith("Current order status"):
+        data_start = 3
     headers = ["Order ID", "Order Status", "Normal or Pre-order", "Seller SKU",
                "成本", "运费", "Quantity", "成本合计", "运费合计",
                "SKU Platform Discount", "SKU Subtotal After Discount", "Payment platform discount", "Created Time"]
     rows = []
-    for r in range(2, ws.max_row + 1):
+    for r in range(data_start, ws.max_row + 1):
         st = str(ws.cell(r, ci["Order Status"]).value or "").strip().lower()
         if any(e in st for e in excl): continue
         pre = ws.cell(r, ci["Normal or Pre-order"]).value
@@ -309,7 +368,8 @@ def process_tiktok(in_path, out_path):
         ct = round(cost * qty, 2) if cost is not None else None
         ste = round(ship * qty, 2) if ship is not None else None
         date_val = trunc_date(ws.cell(r, ci["Created Time"]).value)
-        rows.append([ws.cell(r, ci["Order ID"]).value, ws.cell(r, ci["Order Status"]).value, pre, raw,
+        order_value = ws.cell(r, ci["Order ID"]).value
+        rows.append([str(order_value) if order_value is not None else "", ws.cell(r, ci["Order Status"]).value, pre, raw,
                      cost, ship, qty, ct, ste,
                      parse_idr(ws.cell(r, ci["SKU Platform Discount"]).value),
                      parse_idr(ws.cell(r, ci["SKU Subtotal After Discount"]).value),
@@ -318,10 +378,10 @@ def process_tiktok(in_path, out_path):
     wb_out = openpyxl.Workbook()
     ws_out = wb_out.active; ws_out.title = "筛选后"
     write_data_sheet(ws_out, rows, headers)
-    add_summary(wb_out, rows, headers, date_idx=12, order_idx=0, qty_idx=6,
-                cost_total_idx=7, ship_total_idx=8,
-                sales_fn=lambda r: (r[9] or 0) + (r[10] or 0) + (r[11] or 0))
-    wb_out.save(out_path); return len(rows)
+    summaries = add_summary(wb_out, rows, headers, date_idx=12, order_idx=0, qty_idx=6,
+                            cost_total_idx=7, ship_total_idx=8,
+                            sales_fn=lambda r: (r[9] or 0) + (r[10] or 0) + (r[11] or 0))
+    wb_out.save(out_path); return len(rows), summaries
 
 
 def main():
@@ -353,7 +413,10 @@ def main():
     base, ext = os.path.splitext(a.input)
     out = a.output or (base + "_筛选后" + ext)
     fn = {"shopee": process_shopee, "lazada": process_lazada, "tiktok": process_tiktok}[plat]
-    n = fn(a.input, out)
+    n, summaries = fn(a.input, out)
     print("Done: " + str(n) + " rows written -> " + out)
+    for summary in summaries:
+        result = {"file": os.path.basename(a.input), "platform": plat, **summary}
+        print("DAILY_SUMMARY " + json.dumps(result, ensure_ascii=False))
 
 if __name__ == "__main__": main()
